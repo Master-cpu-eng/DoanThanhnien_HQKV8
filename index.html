@@ -1244,9 +1244,18 @@ function parseExtra(row){try{return row&&row.extra?JSON.parse(row.extra):{};}cat
 function isHTXSCrit(c){return /xếp loại|xuất sắc/.test(String(c&&c.name||"").toLowerCase());}
 /* Chỉ tiêu dạng % (đơn vị tính "%", không phải HTXS): đạt 100% khi có hoạt động thuộc lĩnh vực tương ứng */
 function isPctCrit(c){return String(c&&c.unit||"").trim()==="%" && !isHTXSCrit(c);}
+/* Chỉ tiêu "Đỡ đầu thiếu nhi": tự đếm từ tab Danh sách đỡ đầu.
+   Nhận diện theo KEY mặc định (do_dau) HOẶC theo TÊN (kể cả tiêu chí Quản trị tự thêm / đã đổi tên),
+   để số cháu đỡ đầu luôn hiển thị đúng ở mọi tiêu chí liên quan. */
+function isDoDauCrit(c){
+  if(!c) return false;
+  if(c.key==="do_dau") return true;
+  return /đỡ\s*đầu/i.test(String(c.name||"")) && !isPctCrit(c) && !isHTXSCrit(c);
+}
 /* Ghi chú cho tiêu chí "Xếp loại HTXS": nhắc người dùng vào tab Danh sách đoàn viên để cập nhật */
 function critNote(c){
   if(isHTXSCrit(c)) return '<div class="hint" style="margin-top:3px;font-weight:500;color:var(--muted)">🛈 Tự động tính từ tab <b>Danh sách đoàn viên</b>: bấm <b>Sửa</b> từng đoàn viên → chọn <b>“Xếp loại đoàn viên (cuối năm)” = Hoàn thành xuất sắc nhiệm vụ</b> và <b>“Năm xếp loại”</b> đúng năm.</div>';
+  if(isDoDauCrit(c)) return '<div class="hint" style="margin-top:3px;font-weight:500;color:var(--muted)">🛈 Tự động tính từ tab <b>Danh sách đỡ đầu</b> (đếm số cháu mỗi chi đoàn nhận đỡ đầu). Thêm/sửa cháu ở tab đó, số sẽ tự cập nhật.</div>';
   const lvs=pctCritLV(c);
   if(lvs) return '<div class="hint" style="margin-top:3px;font-weight:500;color:var(--muted)">🛈 Đạt <b>100%</b> khi đơn vị có ít nhất 1 hoạt động thuộc lĩnh vực <b>“'+esc(lvs[0])+'”</b> ở tab Nhập liệu.</div>';
   return '';
@@ -1292,7 +1301,7 @@ function unitMemberTotal(unit){
    - Còn lại (định lượng): lấy số đã nhập tay từ hoạt động */
 function critActual(c,g,unit,year){
   if(isHTXSCrit(c)) return htxsCount(unit,year);   // Xếp loại HTXS: tự đếm từ Danh sách đoàn viên
-  if(c.key==="do_dau") return dodauCount(unit);    // Đỡ đầu: tự đếm từ Danh sách các cháu đỡ đầu
+  if(isDoDauCrit(c)) return dodauCount(unit);      // Đỡ đầu: tự đếm từ Danh sách các cháu đỡ đầu (kể cả tiêu chí tự thêm)
   if(isPctCrit(c)){                                 // Tiêu chí %: có hoạt động đúng lĩnh vực => 100%
     const lvs=pctCritLV(c);
     if(lvs) return hasActInLV(unit,year,lvs) ? critTargetVal(c,unit,year) : 0;
