@@ -525,7 +525,7 @@ tr:hover td{background:#FBFCFD}
    • Để trống tất cả = chế độ DEMO (lưu trong máy này).
    ============================================================ */
 const CONFIG = {
-  GAS_URL: "https://script.google.com/macros/s/AKfycbwstLGuO_wAQ1RDvEnyf0CTq1eEVC0-VLwMQfQXX9BcchjN42vGgLC4AOQ4nIBrU86L2A/exec",            // ← DÁN LINK GOOGLE APPS SCRIPT (…/exec) VÀO ĐÂY
+  GAS_URL: "https://script.google.com/macros/s/AKfycbxJvTPKAiRQAOAsYRX6sADRZ1taJhQFg28bzQmcue5G1IwuPFMdtyzRBz47gaKdnMFO/exec",            // ← DÁN LINK GOOGLE APPS SCRIPT (…/exec) VÀO ĐÂY
   SUPABASE_URL: "",
   SUPABASE_ANON_KEY: ""
 };
@@ -1424,8 +1424,6 @@ function unitTargets(don_vi,year){
   const row=TARGETS.find(t=>t.don_vi===don_vi&&String(t.nam)===String(year));
   const ex=parseExtra(row);
   const map={}; allCrit().forEach(ct=>map[ct.key]= row ? (ct.custom?num(ex[ct.key]):num(row[ct.key])) : 0);
-  const ps=pctShareMap();                                    // % chia sống theo quân số hiện thời
-  allCrit().forEach(ct=>{ if(isPctCrit(ct)) map[ct.key]=num(ps[don_vi]); });
   return {map,has:!!row,row};
 }
 /* Chỉ tiêu chung toàn Đoàn — số đã lưu (dùng cho bảng Phân bổ) */
@@ -1433,7 +1431,6 @@ function overallTargets(year){
   const row=TARGETS.find(t=>t.don_vi===DON_VI[0]&&String(t.nam)===String(year));
   const ex=parseExtra(row);
   const map={}; allCrit().forEach(ct=>map[ct.key]= row ? (ct.custom?num(ex[ct.key]):num(row[ct.key])) : (ct.custom?0:ct.target));
-  allCrit().forEach(ct=>{ if(isPctCrit(ct)) map[ct.key]=100; });  // toàn Đoàn của tiêu chí % luôn = 100
   return {map,has:!!row,row};
 }
 function currentTargets(){
@@ -2592,21 +2589,15 @@ function viewPhanBo(){
   units.forEach(dv=>{
     const m=unitTargets(dv,curYear).map;
     const tr=el("tr");
-    tr.innerHTML=`<td><b>${esc(dv)}</b></td>`+CRIT.map(c=>isPctCrit(c)
-      ? `<td class="num" title="Tự chia theo quân số — không nhập tay"><b>${m[c.key]||0}</b><div style="font-size:9px;color:var(--muted);font-weight:600">tự động</div></td>`
-      : `<td class="num"><input class="numgrp tgt-in" data-dv="${esc(dv)}" data-k="${c.key}" style="width:88px;text-align:right;padding:7px 8px" value="${m[c.key]?groupVN(m[c.key]):""}" placeholder="0"></td>`).join("");
+    tr.innerHTML=`<td><b>${esc(dv)}</b></td>`+CRIT.map(c=>`<td class="num"><input class="numgrp tgt-in" data-dv="${esc(dv)}" data-k="${c.key}" style="width:88px;text-align:right;padding:7px 8px" value="${m[c.key]?groupVN(m[c.key]):""}" placeholder="0"></td>`).join("");
     tbody.appendChild(tr);
   });
   const totRow=el("tr");totRow.style.cssText="font-weight:800;background:#F3F7FB";
-  totRow.innerHTML=`<td>TỔNG ĐÃ PHÂN BỔ</td>`+CRIT.map(c=>isPctCrit(c)
-    ? `<td class="num" style="color:var(--green)">100</td>`
-    : `<td class="num" data-sum="${c.key}">0</td>`).join("");
+  totRow.innerHTML=`<td>TỔNG ĐÃ PHÂN BỔ</td>`+CRIT.map(c=>`<td class="num" data-sum="${c.key}">0</td>`).join("");
   tbody.appendChild(totRow);
   const ovr=overallTargets(curYear).map;
   const ovrRow=el("tr");ovrRow.style.cssText="background:#EAF2FB";
-  ovrRow.innerHTML=`<td><b>Chỉ tiêu toàn Đoàn</b><div style="font-weight:500;font-size:11px;color:var(--muted)">có thể chỉnh</div></td>`+CRIT.map(c=>isPctCrit(c)
-    ? `<td class="num"><b style="color:var(--green)">100</b></td>`
-    : `<td class="num"><input class="numgrp ovr-in" data-k="${c.key}" style="width:88px;text-align:right;padding:7px 8px;font-weight:700" value="${ovr[c.key]?groupVN(ovr[c.key]):""}" placeholder="0"></td>`).join("");
+  ovrRow.innerHTML=`<td><b>Chỉ tiêu toàn Đoàn</b><div style="font-weight:500;font-size:11px;color:var(--muted)">có thể chỉnh</div></td>`+CRIT.map(c=>`<td class="num"><input class="numgrp ovr-in" data-k="${c.key}" style="width:88px;text-align:right;padding:7px 8px;font-weight:700" value="${ovr[c.key]?groupVN(ovr[c.key]):""}" placeholder="0"></td>`).join("");
   tbody.appendChild(ovrRow);
   t.appendChild(tbody);scroll.appendChild(t);card.appendChild(scroll);
 
@@ -2659,7 +2650,7 @@ function viewPhanBo(){
     else warn.style.display="none";
   }
 
-  const foot=el("div");foot.style.cssText="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap";
+  const foot=el("div");foot.style.cssText="margin-top:4px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:14px 16px 16px";
   const save=el("button","btn btn-primary",IC.save+"Lưu phân bổ");
   save.onclick=async()=>{
     const map={};
@@ -2689,12 +2680,31 @@ function viewPhanBo(){
     scroll.querySelectorAll(".ovr-in").forEach(inp=>{const k=inp.getAttribute("data-k");inp.value=om[k]?groupVN(om[k]):"";});
     recalc();toast("Đã đặt lại về số đã lưu.","ok");
   };
-  foot.appendChild(save);foot.appendChild(auto);foot.appendChild(resetBtn);
-  foot.appendChild(el("span","hint","Cột tỷ lệ % <b>tự chia theo quân số</b> (Danh sách đoàn viên) — không cần nhập, tự cập nhật khi quân số thay đổi. Các cột định lượng: “Chỉ tiêu toàn Đoàn” chỉnh trực tiếp, ô trống = 0."));
+  const autoPct=el("button","btn btn-ghost",IC.scale+"Chia theo quân số");
+  autoPct.title="Tự chia các tiêu chí tỷ lệ % cho 8 chi đoàn theo số đoàn viên; tổng = 100%";
+  autoPct.onclick=()=>{
+    const pctCrits=CRIT.filter(c=>isPctCrit(c));
+    if(!pctCrits.length){toast("Bảng chưa có tiêu chí tỷ lệ % nào để chia.","bad");return;}
+    if(!unitMemberTotal()){toast("Chưa có số đoàn viên. Hãy cập nhật Danh sách đoàn viên trước.","bad");return;}
+    if(!confirm(`Tự chia ${pctCrits.length} tiêu chí tỷ lệ % cho 8 chi đoàn theo số đoàn viên (tổng = 100%)? Các số % đang nhập sẽ bị ghi đè.`))return;
+    const sm=pctShareMap();
+    const pctKeys=new Set(pctCrits.map(c=>c.key));
+    scroll.querySelectorAll(".tgt-in").forEach(inp=>{
+      const k=inp.getAttribute("data-k"), dv=inp.getAttribute("data-dv");
+      if(pctKeys.has(k) && sm[dv]!=null) inp.value=String(sm[dv]);
+    });
+    scroll.querySelectorAll(".ovr-in").forEach(ov=>{ if(pctKeys.has(ov.getAttribute("data-k"))) ov.value="100"; });
+    recalc();
+    toast("Đã chia theo quân số (tổng 100%). Kiểm tra rồi bấm Lưu phân bổ.","ok");
+  };
+  foot.appendChild(save);foot.appendChild(autoPct);foot.appendChild(auto);foot.appendChild(resetBtn);
+  const footHint=el("div","hint","Cột tỷ lệ % (quán triệt, tuyên truyền…): bấm <b>“Chia theo quân số”</b> để tự chia theo số đoàn viên (tổng 100%) rồi <b>Lưu phân bổ</b> — có thể sửa tay từng ô trước khi lưu. Cột định lượng: “Chỉ tiêu toàn Đoàn” chỉnh trực tiếp, ô trống = 0.");
+  footHint.style.cssText="flex-basis:100%;margin-top:2px;line-height:1.5";
+  foot.appendChild(footHint);
   card.appendChild(foot);box.appendChild(card);
 
   // Khu vực thêm tiêu chí tùy chọn
-  const addCard=el("div","card");addCard.style.marginTop="16px";
+  const addCard=el("div","card");addCard.style.cssText="margin-top:16px;padding:16px 18px";
   addCard.appendChild(el("h3",null,"Thêm tiêu chí tùy chọn"));
   addCard.appendChild(el("p","hint","Tạo tiêu chí mới (ngoài 7 tiêu chí mặc định) để giao cho các chi đoàn. Tiêu chí mới sẽ thành một cột trong bảng trên."));
   const addWrap=el("div");addWrap.style.cssText="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px";
