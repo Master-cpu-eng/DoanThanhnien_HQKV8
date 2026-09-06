@@ -2061,7 +2061,13 @@ function viewKetXuat(){
     }catch(e){ toast("Không mở được cửa sổ in: "+e.message,"bad"); }
   };
   ai.onclick=async()=>{
-    if(!Store.aiDraft){ toast("Tính năng AI cần bản Google Sheets + Code.gs mới (đã thêm hàm aiDraft).","bad"); return; }
+    // Gọi Gemini TRỰC TIẾP từ trình duyệt (không qua Code.gs/UrlFetchApp) — chạy được cả khi tài khoản bị chặn quyền external_request.
+    let gkey=""; try{ gkey=localStorage.getItem("hqkv8_gemini_key")||""; }catch(e){}
+    if(!gkey){
+      gkey=(window.prompt("Dán KHÓA API Gemini (lấy miễn phí tại https://aistudio.google.com/apikey). Khóa chỉ lưu trên máy này.","")||"").trim();
+      if(!gkey){ toast("Chưa nhập khóa API Gemini.","bad"); return; }
+      try{ localStorage.setItem("hqkv8_gemini_key",gkey); }catch(e){}
+    }
     const prompt=
 "Bạn là trợ lý soạn thảo văn bản của Đoàn TNCS Hồ Chí Minh Chi cục Hải quan khu vực VIII. "+
 "Hãy viết một BÁO CÁO kết quả công tác Đoàn và phong trào thanh niên HOÀN CHỈNH, trang trọng, đúng văn phong hành chính - đoàn thể Việt Nam, "+
@@ -2070,7 +2076,12 @@ function viewKetXuat(){
 "Viết thay cho các chỗ để trống trong ngoặc [ ]. Không dùng dấu gạch ngang dài hay mũi tên. Trả về văn bản thuần, không dùng markdown.\n\n=== SỐ LIỆU VÀ DÀN Ý ===\n"+text;
     const old=ai.textContent; ai.disabled=true; ai.textContent="⏳ AI đang soạn…";
     try{
-      const out=await Store.aiDraft(prompt);
+      const _model="gemini-2.0-flash";
+      const _resp=await fetch("https://generativelanguage.googleapis.com/v1beta/models/"+_model+":generateContent?key="+encodeURIComponent(gkey),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.4,maxOutputTokens:8192}})});
+      if(!_resp.ok){ const _et=await _resp.text(); if(_resp.status===400||_resp.status===403){ try{localStorage.removeItem("hqkv8_gemini_key");}catch(e){} } throw new Error("Gemini báo lỗi ("+_resp.status+"). "+String(_et).slice(0,200)+" (Nếu do khóa sai, bấm lại nút để nhập khóa mới.)"); }
+      const _dj=await _resp.json();
+      let out=""; try{ out=_dj.candidates[0].content.parts.map(function(p){return p.text||"";}).join(""); }catch(e){ out=""; }
+      if(!out) throw new Error("AI không trả về nội dung (có thể do bộ lọc an toàn hoặc dữ liệu quá dài). Hãy thử lại.");
       const root=$("#modalRoot");
       root.innerHTML=`<div class="modal-bg"><div class="modal" style="max-width:760px">
         <div class="modal-head"><span>✨ Báo cáo do AI (Gemini) soạn</span><button class="x" id="ai_close">×</button></div>
