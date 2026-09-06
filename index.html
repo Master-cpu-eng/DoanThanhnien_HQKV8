@@ -364,6 +364,7 @@ tr:hover td{background:#FBFCFD}
 .guide .tipbox{background:#EFF6FF;border:1px solid #CFE3FB;border-radius:9px;padding:10px 12px;margin-top:8px}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 </head>
 <body>
 
@@ -875,7 +876,8 @@ const SheetsStore = {
   async removeCriteria(id){ await this._call("removeCriteria",{id}); },
   async getSettings(){ const d=await this._call("getSettings"); return d.settings||{}; },
   async saveSetting(key,value){ await this._call("saveSetting",{key,value}); },
-  async uploadFile(payload){ const d=await this._call("uploadFile",payload); return d; }
+  async uploadFile(payload){ const d=await this._call("uploadFile",payload); return d; },
+  async aiDraft(prompt){ const d=await this._call("aiDraft",{prompt}); return d.text||""; }
 };
 
 let Store = SHEETS ? SheetsStore : (CLOUD ? CloudStore : LocalStore);
@@ -922,6 +924,9 @@ function toast(msg,kind){const t=$("#toast");t.className="toast show "+(kind||""
 
 function tierClass(p){return p>=1?"lv-green":p>=0.7?"lv-amber":"lv-red";}
 function tierColor(p){return p>=1?"#059669":p>=0.7?"#D97706":"#DC2626";}
+/* Quyền XEM toàn bộ: Quản trị hoặc Khách (viewer). Dùng cho các kiểm tra HIỂN THỊ (không dùng cho quyền sửa/xóa). */
+function seeAll(){var r=Store.user&&Store.user.role;return r==="admin"||r==="viewer";}
+function isViewer(){return Store.user&&Store.user.role==="viewer";}
 
 /* ============================================================
    ĐĂNG NHẬP
@@ -1066,8 +1071,9 @@ async function enterApp(){
   $("#app").classList.remove("hidden");
   const u=Store.user;
   $("#uName").textContent=u.name||u.don_vi;
-  $("#uRole").textContent=u.role==="admin"?"QUẢN TRỊ":"CHI ĐOÀN";
-  TABS=TABS_BASE.map(t=>(u.role==="admin"&&t.id==="hoso")?{id:"hoso",label:"Hồ sơ Đoàn Chi cục HQKV8"}:t);
+  $("#uRole").textContent=u.role==="admin"?"QUẢN TRỊ":(u.role==="viewer"?"KHÁCH · CHỈ XEM":"CHI ĐOÀN");
+  const _seeAll=(u.role==="admin"||u.role==="viewer");
+  TABS=TABS_BASE.map(t=>(_seeAll&&t.id==="hoso")?{id:"hoso",label:"Hồ sơ Đoàn Chi cục HQKV8"}:t);
   if(u.role==="admin"){
     const i=TABS.findIndex(t=>t.id==="doichieu");
     TABS.splice(i+1,0,{id:"phanbo",label:"Phân bổ chỉ tiêu"});
@@ -1272,23 +1278,46 @@ function periodBar(onchange){
   return wrap;
 }
 
+/* Vai trò của đơn vị trong hoạt động: "chu_tri" (chủ trì/tổ chức/đại diện) hoặc "cu_tham_gia" (chỉ cử ĐV đi dự chương trình do đơn vị khác chủ trì). Mặc định "chu_tri" để tương thích ngược. */
+function actRole(a){var e=parseExtra(a);return (e&&e.role)?e.role:"chu_tri";}
+/* Mã chương trình chung (chỉ dùng "Tên chương trình chung" người dùng nhập; KHÔNG suy từ tên hoạt động để tránh gộp nhầm 2 đơn vị độc lập trùng tên). */
+function actProg(a){var e=parseExtra(a);return (e&&e.ct_chung)?String(e.ct_chung).trim().toLowerCase():"";}
+/* CHỐNG TRÙNG khi tổng hợp (đã củng cố):
+   B1) Bản "cử tham gia" trùng CHƯƠNG TRÌNH CHUNG với một bản "chủ trì" CÓ TRONG PHẠM VI -> loại khỏi tổng.
+   B2) Với các chỉ số cộng dồn, mỗi CHƯƠNG TRÌNH CHUNG chỉ tính MỘT bản đại diện (ưu tiên bản "chủ trì") -> không cộng trùng dù có nhiều bản cùng chương trình.
+   Nếu không có bản chủ trì trùng trong phạm vi (vd: xem theo từng chi đoàn, hoặc chương trình cấp trên) -> vẫn tính (ghi nhận cho đơn vị). */
 function aggFrom(rows){
-  const sum=k=>rows.reduce((s,a)=>s+num(a[k]),0);
-  const luot_tn=rows.filter(a=>a.linh_vuc===LV_TINHNGUYEN).reduce((s,a)=>s+num(a.luot),0);
+  var hostProg={};
+  rows.forEach(function(a){ if(actRole(a)!=="cu_tham_gia"){ var k=actProg(a); if(k) hostProg[k]=1; } });
+  var kept=rows.filter(function(a){
+    if(actRole(a)!=="cu_tham_gia") return true;
+    var k=actProg(a); return !(k && hostProg[k]);
+  });
+  var repSeen={}, counted=[];
+  kept.forEach(function(a){
+    var k=actProg(a);
+    if(!k){ counted.push(a); return; }                       // không thuộc chương trình chung: tính riêng
+    if(!repSeen[k]){ repSeen[k]=a; counted.push(a); }          // bản đầu tiên của chương trình chung
+    else if(actRole(a)!=="cu_tham_gia" && actRole(repSeen[k])==="cu_tham_gia"){  // ưu tiên bản chủ trì làm đại diện
+      var i=counted.indexOf(repSeen[k]); if(i>=0) counted[i]=a; repSeen[k]=a;
+    }
+  });
+  const sum=k=>counted.reduce((s,a)=>s+num(a[k]),0);
+  const luot_tn=counted.filter(a=>a.linh_vuc===LV_TINHNGUYEN).reduce((s,a)=>s+num(a.luot),0);
   const out={
-    rows, count:rows.length,
+    rows, count:counted.length,
     luot:luot_tn, khcn:sum("khcn"), sang_kien:sum("sang_kien"), cay:sum("cay"),
     bien:sum("bien"), do_dau:sum("do_dau"), dang:sum("dang"),
     luot_all:sum("luot"), kinh_phi:sum("kinh_phi"),
     units:new Set(rows.map(a=>a.don_vi)).size
   };
-  customCrit().forEach(c=>{ out[c.key]=rows.reduce((s,a)=>s+num(parseExtra(a)[c.key]),0); });
+  customCrit().forEach(c=>{ out[c.key]=counted.reduce((s,a)=>s+num(parseExtra(a)[c.key]),0); });
   return out;
 }
 function aggregate(period){
   const {end}=periodRange(period);
   const u=Store.user;
-  const rows=ACT.filter(a=>a.ten&&a.don_vi&&(u&&u.role==="admin"||a.don_vi===(u&&u.don_vi))&&num(a.nam||2026)===curYear&&num(a.thang)>=1&&num(a.thang)<=end);
+  const rows=ACT.filter(a=>a.ten&&a.don_vi&&(seeAll()||a.don_vi===(u&&u.don_vi))&&num(a.nam||2026)===curYear&&num(a.thang)>=1&&num(a.thang)<=end);
   return aggFrom(rows);
 }
 /* Tổng hợp cho MỘT chi đoàn cụ thể (dùng ở mục chi tiết của Quản trị) */
@@ -1400,7 +1429,7 @@ function critActual(c,g,unit,year){
     }
   }
   const ck=critConceptKey(c);                       // Định lượng: lấy tổng đúng cột ở tab Nhập liệu
-  if(ck==="luot") return g.luot_all||0;             // "Lượt ĐV, TN tham gia" = tổng toàn bộ cột (không lọc lĩnh vực)
+  if(ck==="luot") return g.luot||0;                 // "Lượt ĐV, TN tham gia hoạt động TÌNH NGUYỆN" = chỉ tính lượt của hoạt động thuộc lĩnh vực Tình nguyện
   if(ck) return g[ck]||0;
   return g[c.key]||0;
 }
@@ -1435,7 +1464,7 @@ function overallTargets(year){
 }
 function currentTargets(){
   const u=Store.user;
-  if(u&&u.role==="admin"){
+  if(u&&seeAll()){   // Quản trị & Khách: chỉ tiêu toàn Đoàn
     const ot=overallTargets(curYear).map, units=DON_VI.slice(1), map={};
     allCrit().forEach(ct=>{
       let v=ot[ct.key];
@@ -1482,7 +1511,7 @@ function viewDashboard(){
     ["Số hoạt động",fmt(g.count),"lũy kế","k-"],
     ["Lượt đoàn viên, thanh niên tham gia",fmt(g.luot_all),"lũy kế","k-teal"],
     ["Cây xanh trồng mới",fmt(g.cay),"cây","k-green"],
-    ["Thiếu nhi đỡ đầu",fmt(dodauCount(u.role==="admin"?null:u.don_vi)),"cháu","k-gold"],
+    ["Thiếu nhi đỡ đầu",fmt(dodauCount(seeAll()?null:u.don_vi)),"cháu","k-gold"],
     ["Kinh phí",fmt(g.kinh_phi),"đồng","k-navy"]
   ];
   const kg=el("div","kpigrid");
@@ -1495,7 +1524,7 @@ function viewDashboard(){
   panel.appendChild(el("div","phint",'Thanh tiến độ đổi màu: <b style="color:var(--green)">xanh</b> ≥100% · <b style="color:var(--amber)">vàng</b> 70–99% · <b style="color:var(--red-text)">đỏ</b> &lt;70%.'));
   if(!T.admin && !T.has) panel.appendChild(el("div","banner",`<b>ℹ</b><div>Đoàn Chi cục <b>chưa phân bổ chỉ tiêu năm ${curYear}</b> cho đơn vị của bạn. Số liệu bên dưới vẫn được ghi nhận; chỉ tiêu sẽ hiển thị sau khi Đoàn Chi cục phân bổ.</div>`));
   allCrit().forEach(ct=>{
-    const tgt=T.map[ct.key], val=critActual(ct,g,(Store.user.role==="admin"?null:Store.user.don_vi),curYear), p=tgt?val/tgt:0, w=Math.max(2,Math.min(1,p)*100);
+    const tgt=T.map[ct.key], val=critActual(ct,g,(seeAll()?null:Store.user.don_vi),curYear), p=tgt?val/tgt:0, w=Math.max(2,Math.min(1,p)*100);
     const row=el("div","tgt");
     row.innerHTML=`<div class="name">${esc(ct.name)}${critNote(ct)}</div>
       <div class="frac tnum">${fmt(val)}<small>/${fmt(tgt)} ${esc(ct.unit||"")}</small></div>
@@ -1507,21 +1536,23 @@ function viewDashboard(){
 
   // theo chi đoàn (quản trị: 9 đơn vị · chi đoàn: chỉ đơn vị mình)
   const byUnit=el("div","panel");
-  byUnit.appendChild(el("h3",null, u.role==="admin"?"KẾT QUẢ THEO CHI ĐOÀN (số hoạt động · lũy kế đến hết kỳ)":"KẾT QUẢ ĐƠN VỊ (số hoạt động · lũy kế đến hết kỳ)"));
-  const unitList = u.role==="admin" ? DON_VI : [u.don_vi];
+  byUnit.appendChild(el("h3",null,"KẾT QUẢ THEO ĐƠN VỊ (số hoạt động · lũy kế đến hết kỳ)"));
+  const unitList = DON_VI;   // mọi tài khoản đều xem được so sánh toàn Đoàn (dữ liệu hoạt động là dữ liệu chung, để các đơn vị nhìn nhau phấn đấu)
   const rows=unitList.map(dv=>{
-    const r=g.rows.filter(a=>a.don_vi===dv);
-    return {dv,hd:r.length,luot:r.reduce((s,a)=>s+num(a.luot),0)};
+    const gu=aggUnit(dv,curPeriod);   // dùng aggUnit để đồng nhất cách đếm (đã loại trùng theo phạm vi đơn vị)
+    return {dv,hd:gu.count,luot:gu.luot_all};
   }).sort((a,b)=>b.hd-a.hd);
   const max=Math.max(1,...rows.map(r=>r.hd));
   rows.forEach(r=>{
+    const mine = r.dv===u.don_vi;
     const row=el("div","tgt");
-    row.innerHTML=`<div class="name">${esc(r.dv)}</div><div class="frac tnum">${r.hd} HĐ · ${fmt(r.luot)} lượt</div>
-      <div class="bar lv-amber"><span style="width:${Math.max(2,r.hd/max*100)}%"></span></div><div></div>`;
+    if(mine){ row.style.background="rgba(212,45,42,.06)"; row.style.borderRadius="8px"; }
+    row.innerHTML=`<div class="name">${esc(r.dv)}${mine?' <span style="font-size:10.5px;font-weight:800;color:var(--red);background:var(--red-soft);padding:1px 7px;border-radius:99px">ĐƠN VỊ CỦA BẠN</span>':''}</div><div class="frac tnum">${r.hd} HĐ · ${fmt(r.luot)} lượt</div>
+      <div class="bar ${mine?'lv-red':'lv-amber'}"><span style="width:${Math.max(2,r.hd/max*100)}%"></span></div><div></div>`;
     byUnit.appendChild(row);
   });
-  // CHI TIẾT THEO CHI ĐOÀN (chỉ Quản trị): tiến độ từng chỉ tiêu + hoạt động đã kê khai
-  if(u.role==="admin"){
+  // CHI TIẾT THEO CHI ĐOÀN (Quản trị & Khách xem): tiến độ từng chỉ tiêu + hoạt động đã kê khai
+  if(seeAll()){
     const detail=el("div","panel");
     detail.appendChild(el("h3",null,"CHI TIẾT THEO CHI ĐOÀN — tiến độ chỉ tiêu & hoạt động"));
     detail.appendChild(el("div","phint",'Bấm vào từng chi đoàn để mở. Chỉ tiêu <b style="color:#C0392B">chưa đạt</b> được tô đỏ; kèm danh sách hoạt động đơn vị đã kê khai.'));
@@ -1589,22 +1620,22 @@ function viewEntry(){
   const u=Store.user, isAdmin=u.role==="admin";
   const box=el("div");
   const head=el("div","pagehead");
-  head.innerHTML=`<div><h2>Nhập liệu hoạt động</h2><p>${isAdmin?"Bạn có quyền quản trị: xem và chỉnh sửa dữ liệu của tất cả các đơn vị.":"Bạn nhập &amp; quản lý dữ liệu của: <b>"+esc(u.don_vi)+"</b>."}</p></div>`;
-  const addBtn=el("button","btn btn-primary",IC.add+"Thêm hoạt động");addBtn.onclick=()=>openForm(null);
-  head.appendChild(addBtn);box.appendChild(head);
+  head.innerHTML=`<div><h2>Nhập liệu hoạt động</h2><p>${isViewer()?"Tài khoản khách: <b>chỉ xem</b> toàn bộ hoạt động của các đơn vị.":(isAdmin?"Bạn có quyền quản trị: xem và chỉnh sửa dữ liệu của tất cả các đơn vị.":"Bạn nhập &amp; quản lý dữ liệu của: <b>"+esc(u.don_vi)+"</b>.")}</p></div>`;
+  if(!isViewer()){ const addBtn=el("button","btn btn-primary",IC.add+"Thêm hoạt động");addBtn.onclick=()=>openForm(null); head.appendChild(addBtn); }
+  box.appendChild(head);
 
   box.appendChild(CLOUD
     ? el("div","banner cloud",'<b>●</b><div>Đang lưu lên máy chủ dùng chung. Mọi đơn vị cùng thấy báo cáo tổng hợp; mỗi đơn vị chỉ sửa được dữ liệu của mình (phân quyền bảo vệ ở máy chủ).</div>')
     : el("div","banner",'<b>⚠</b><div>Chế độ demo — dữ liệu chỉ lưu trên máy này, <b>chưa dùng chung</b> giữa các đơn vị. Xem README để bật chế độ đám mây (Supabase).</div>'));
 
-  // dữ liệu hiển thị: unit chỉ thấy của mình
+  // dữ liệu hiển thị: Quản trị & Khách thấy tất cả; chi đoàn chỉ thấy của mình
   let data=ACT.slice();
-  if(!isAdmin) data=data.filter(a=>a.don_vi===u.don_vi);
+  if(!seeAll()) data=data.filter(a=>a.don_vi===u.don_vi);
   let filtered=data.slice();
   const card=el("div","card");
   const tb=el("div","toolbar");
   tb.innerHTML=`<b style="font-size:13px">Bộ lọc:</b>`;
-  if(isAdmin){
+  if(seeAll()){
     const su=el("select");su.appendChild(new Option("Tất cả đơn vị","__all"));DON_VI.forEach(d=>su.appendChild(new Option(d,d)));su.value=entryFilterUnit;
     su.onchange=()=>{entryFilterUnit=su.value;entryPage=1;refresh();};tb.appendChild(su);
   }
@@ -1614,11 +1645,11 @@ function viewEntry(){
   sm.onchange=()=>{entryFilterMonth=sm.value;entryPage=1;refresh();};tb.appendChild(sm);
   const sp=el("span");sp.style.flex="1";tb.appendChild(sp);
   const exp=el("button","btn btn-ghost btn-sm",IC.down+"Xuất Excel");exp.onclick=()=>{
-    const unitLabel = !isAdmin ? u.don_vi : (entryFilterUnit==="__all" ? "Tất cả đơn vị (toàn Đoàn Chi cục)" : entryFilterUnit);
+    const unitLabel = !seeAll() ? u.don_vi : (entryFilterUnit==="__all" ? "Tất cả đơn vị (toàn Đoàn Chi cục)" : entryFilterUnit);
     const yearLabel = entryFilterYear==="__all" ? "Tất cả năm" : ("Năm "+entryFilterYear);
     const monthLabel = entryFilterMonth==="__all" ? "" : (" · Tháng "+entryFilterMonth);
     const subtitle = `${yearLabel}${monthLabel} · Xuất ngày ${fmtDMY(new Date().toISOString().slice(0,10))}`;
-    exportActivities(filtered,{showUnitCol:isAdmin&&entryFilterUnit==="__all",unitLine:unitLabel,subtitle});
+    exportActivities(filtered,{showUnitCol:seeAll()&&entryFilterUnit==="__all",unitLine:unitLabel,subtitle});
   };tb.appendChild(exp);
   card.appendChild(tb);
   const scroll=el("div","tablescroll");scroll.style.maxHeight="68vh";card.appendChild(scroll);
@@ -1627,7 +1658,7 @@ function viewEntry(){
 
   function refresh(){
     let rows=data.slice();
-    if(isAdmin&&entryFilterUnit!=="__all") rows=rows.filter(a=>a.don_vi===entryFilterUnit);
+    if(seeAll()&&entryFilterUnit!=="__all") rows=rows.filter(a=>a.don_vi===entryFilterUnit);
     if(entryFilterYear!=="__all") rows=rows.filter(a=>String(num(a.nam||2026))===String(entryFilterYear));
     if(entryFilterMonth!=="__all") rows=rows.filter(a=>String(a.thang)===String(entryFilterMonth));
     rows.sort((a,b)=>num(a.nam||2026)-num(b.nam||2026)||num(a.thang)-num(b.thang)||String(a.ngay).localeCompare(String(b.ngay)));
@@ -1645,7 +1676,7 @@ function viewEntry(){
     </tr></thead>`;
     const tbody=el("tbody");
     pageRows.forEach((a,i)=>{
-      const canEdit=isAdmin||a.don_vi===u.don_vi;
+      const canEdit=!isViewer()&&(isAdmin||a.don_vi===u.don_vi);
       const tr=el("tr");
       tr.innerHTML=`<td class="num">${(entryPage-1)*entrySize+i+1}</td>
         <td>${esc(a.don_vi)}</td>
@@ -1712,6 +1743,9 @@ function openForm(a){
       <div class="req full"><label>Tên hoạt động / sự kiện</label><input id="f_ten" value="${esc(o.ten)}" placeholder="Ví dụ: Chương trình Xuân tình nguyện năm 2026"></div>
       <div><label>Lĩnh vực / Nhóm hoạt động</label><select id="f_linh_vuc">${opts(LINH_VUC,o.linh_vuc)}</select></div>
       <div><label>Hình thức tổ chức</label><select id="f_hinh_thuc">${opts(HINH_THUC,o.hinh_thuc)}</select></div>
+      <div><label>Vai trò của đơn vị</label><select id="f_vaitro"><option value="chu_tri"${(oex.role||"chu_tri")==="chu_tri"?" selected":""}>Chủ trì / tổ chức (hoặc đại diện ghi nhận)</option><option value="cu_tham_gia"${oex.role==="cu_tham_gia"?" selected":""}>Chỉ cử đoàn viên tham gia (chương trình do đơn vị khác chủ trì)</option></select></div>
+      <div class="full"><label>Tên chương trình chung <span style="color:var(--muted)">(nếu là hoạt động phối hợp / được triệu tập)</span></label><input id="f_ctchung" value="${esc(oex.ct_chung||"")}" placeholder="Bỏ trống nếu là hoạt động độc lập của đơn vị"></div>
+      <div class="full"><div class="hint" style="margin:0"><b>Chống trùng số liệu:</b> chọn <b>“Chỉ cử đoàn viên tham gia”</b> khi đoàn viên đơn vị được cử/triệu tập dự chương trình do Đoàn cấp trên hoặc Đoàn Chi cục chủ trì. Khi <b>tổng hợp toàn Đoàn</b>, nếu đã có bản <b>“Chủ trì”</b> cùng <i>Tên chương trình chung</i>, các bản “cử tham gia” sẽ <b>không bị cộng trùng</b>; nhưng ở phạm vi riêng của chi đoàn thì vẫn được ghi nhận. Lưu ý: bản <b>“Chủ trì” nên khai TỔNG số liệu của cả chương trình</b> (kể cả số lượt của các chi đoàn được cử).</div></div>
 
       <div class="formsec">2. Số liệu kết quả <span>— nhập trực tiếp con số kết quả của hoạt động vào từng ô</span></div>
       <div class="full"><div class="hint" style="margin:0 0 8px">Điền số kết quả của hoạt động vào các ô bên dưới — phần mềm <b>tự cộng vào đúng chỉ tiêu</b> ở tab <b>Đối chiếu chỉ tiêu</b>. Ô nào không phát sinh thì để trống (0). Kinh phí nhập theo đồng (ví dụ 1.000.000). <i>(Số trẻ “đỡ đầu” lấy từ tab Danh sách các cháu đỡ đầu, không nhập ở đây.)</i></div></div>
@@ -1819,8 +1853,11 @@ function openForm(a){
       ket_qua:g("f_ket_qua").trim(), minh_chung:g("f_minh_chung").trim()
     });
     FORM_NUM_ORDER.forEach(k=>{ const elx=document.getElementById("f_"+k); if(elx) rec[k]=num(ungroup(elx.value)); });
-    // giữ nguyên cột extra (tiêu chí tự thêm) của bản ghi cũ, không đụng tới
-    rec.extra=o.extra||rec.extra||"";
+    // Ghi vai trò đơn vị + tên chương trình chung vào cột extra (giữ nguyên các tiêu chí tự thêm cũ)
+    var _ex; try{ _ex=o.extra?(typeof o.extra==="string"?JSON.parse(o.extra):o.extra):{}; }catch(e){ _ex={}; }
+    _ex.role=(g("f_vaitro")||"chu_tri");
+    _ex.ct_chung=(g("f_ctchung")||"").trim();
+    rec.extra=JSON.stringify(_ex);
     if(!rec.ten){toast("Vui lòng nhập Tên hoạt động.","bad");return;}
     try{
       $("#f_save").disabled=true;$("#f_save").textContent="Đang lưu…";
@@ -1860,26 +1897,224 @@ function viewDoiChieu(){
 }
 
 /* ---------- KẾT XUẤT ---------- */
+/* Ánh xạ LĨNH VỰC hoạt động -> MỤC trong báo cáo (theo cấu trúc báo cáo công tác Đoàn chuẩn) */
+const REPORT_SECTIONS=[
+  {h:"Công tác tuyên truyền, giáo dục chính trị, tư tưởng", lv:[0]},
+  {h:'Tiên phong phát triển khoa học công nghệ, đổi mới sáng tạo và chuyển đổi số', lv:[3]},
+  {h:"Đồng hành với thanh niên trong học tập, hội nhập quốc tế", lv:[5]},
+  {h:"Tiên phong trong các hoạt động tình nguyện vì cộng đồng, hỗ trợ nhân dân vùng biên giới", lv:[1,2]},
+  {h:"Tiên phong tham gia bảo vệ Tổ quốc, giữ gìn an ninh trật tự", lv:[4]},
+  {h:"Phát triển toàn diện thanh niên (văn hóa, văn nghệ, thể thao)", lv:[6]},
+  {h:"Công tác chăm sóc, bảo vệ, giáo dục thiếu niên, nhi đồng", lv:[7]},
+  {h:"Công tác xây dựng Đoàn, tham gia xây dựng Đảng và hệ thống chính trị", lv:[8]},
+  {h:"Các hoạt động khác", lv:[9]}
+];
+function reportActLine(a,showUnit){
+  const when=a.ngay?fmtDMY(a.ngay):(a.thang?("tháng "+a.thang+"/"+(a.nam||curYear)):"");
+  const role=actRole(a)==="cu_tham_gia"?" [cử ĐV tham gia]":"";
+  const nums=[];
+  if(num(a.luot))nums.push(fmt(a.luot)+" lượt");
+  if(num(a.cay))nums.push(fmt(a.cay)+" cây");
+  if(num(a.khcn))nums.push(fmt(a.khcn)+" công trình KHCN");
+  if(num(a.sang_kien))nums.push(fmt(a.sang_kien)+" sáng kiến");
+  if(num(a.bien))nums.push(fmt(a.bien)+" CT biên giới");
+  if(num(a.dang))nums.push(fmt(a.dang)+" ĐVƯT giới thiệu Đảng");
+  if(num(a.kinh_phi))nums.push(fmt(a.kinh_phi)+" đồng");
+  const noiDung=String(a.ket_qua||"").trim();
+  return (when?("("+when+") "):"")+String(a.ten||"").trim()+role+(showUnit&&a.don_vi?(" — "+a.don_vi):"")+(nums.length?(" ("+nums.join(", ")+")"):"")+(noiDung?(". Nội dung: "+noiDung):"");
+}
+function reportTpl(){ try{ return SETTINGS.report_tpl?JSON.parse(SETTINGS.report_tpl):{}; }catch(e){ return {}; } }
+function buildReportBlocks(){
+  const u=Store.user, all=seeAll();
+  const {end}=periodRange(curPeriod);
+  const rows=ACT.filter(a=>a.ten&&a.don_vi&&(all||a.don_vi===u.don_vi)&&num(a.nam||2026)===curYear&&num(a.thang)>=1&&num(a.thang)<=end);
+  const soDV=all?sumMembers():(num(getProfile(u.don_vi).so_doan_vien)||MEMBERS.filter(m=>m.don_vi===u.don_vi).length);
+  const donViName=all?"Đoàn TNCS Hồ Chí Minh Chi cục Hải quan khu vực VIII":u.don_vi;
+  const isAdmin=all;   // báo cáo toàn Đoàn cho Quản trị & Khách
+  const TPL=reportTpl();
+  const B=[];
+  B.push({t:"h1",s:"BÁO CÁO"});
+  B.push({t:"c",s:`Kết quả công tác Đoàn và phong trào thanh niên ${curPeriod.toLowerCase()} năm ${curYear}, nhiệm vụ trọng tâm thời gian tới`});
+  B.push({t:"h2",s:"I. ĐẶC ĐIỂM, TÌNH HÌNH"});
+  B.push({t:"p",s:`${donViName}${isAdmin?" trực thuộc Đoàn TNCS Hồ Chí Minh Ủy ban nhân dân tỉnh, có 08 chi đoàn trực thuộc":""}, hiện có tổng số ${fmt(soDV)} đoàn viên. ${TPL.dac_diem?TPL.dac_diem:"[Bổ sung khái quát tình hình tư tưởng của đoàn viên, thanh niên; thuận lợi, khó khăn trong kỳ báo cáo.]"}`});
+  B.push({t:"h2",s:"II. KẾT QUẢ ĐẠT ĐƯỢC"});
+  B.push({t:"h3",s:"1. Việc thực hiện chủ đề công tác năm"});
+  B.push({t:"p",s: TPL.chu_de ? TPL.chu_de : "[Nêu việc triển khai chủ đề công tác Đoàn và phong trào thanh niên năm, gắn với nhiệm vụ chính trị của Chi cục.]"});
+  let n=2;
+  REPORT_SECTIONS.forEach(sec=>{
+    const acts=rows.filter(a=>sec.lv.indexOf(LINH_VUC.indexOf(a.linh_vuc))>=0)
+      .sort((a,b)=>(num(a.thang)-num(b.thang))||(String(a.ngay||"")<String(b.ngay||"")?-1:1));
+    if(!acts.length) return;
+    B.push({t:"h3",s:n+". "+sec.h});
+    const g2=aggFrom(acts);
+    B.push({t:"p",s:`Trong kỳ, đơn vị tổ chức và tham gia ${g2.count} hoạt động thuộc nhóm nội dung này, thu hút khoảng ${fmt(g2.luot_all)} lượt đoàn viên, thanh niên tham gia. Một số hoạt động tiêu biểu:`});
+    acts.forEach(a=>B.push({t:"li",s:reportActLine(a,isAdmin)}));
+    n++;
+  });
+  // Kết quả thực hiện chỉ tiêu
+  const g=aggregate(curPeriod), T=currentTargets();
+  B.push({t:"h3",s:n+". Kết quả thực hiện các chỉ tiêu công tác năm (số liệu đến hết "+curPeriod.toLowerCase()+"/"+curYear+")"});
+  allCrit().forEach((ct,i)=>{
+    const tgt=T.map[ct.key], val=critActual(ct,g,(isAdmin?null:u.don_vi),curYear), p=tgt?val/tgt*100:0;
+    if(ct.custom) B.push({t:"li",s:`(${i+1}) ${ct.name}: đạt ${fmt(val)}/${fmt(tgt)} ${ct.unit||""} (${pctVN(p)}%).`});
+    else B.push({t:"li",s:`(${i+1}) ${ct.tpl(fmt(val),fmt(tgt))} (đạt ${pctVN(p)}%).`});
+  });
+  B.push({t:"h2",s:"III. ĐÁNH GIÁ CHUNG"});
+  B.push({t:"p",s:"1. Ưu điểm: "+(TPL.uu_diem||"[tóm tắt những kết quả, ưu điểm nổi bật trong kỳ.]")});
+  B.push({t:"p",s:"2. Tồn tại, hạn chế: "+(TPL.ton_tai||"[nêu những mặt còn hạn chế.]")});
+  B.push({t:"p",s:"3. Nguyên nhân: "+(TPL.nguyen_nhan||"[nêu nguyên nhân của hạn chế.]")});
+  B.push({t:"h2",s:"IV. NHIỆM VỤ TRỌNG TÂM THỜI GIAN TỚI"});
+  B.push({t:"p",s: TPL.phuong_huong ? TPL.phuong_huong : "[Liệt kê các nhiệm vụ trọng tâm sẽ triển khai trong thời gian tới.]"});
+  return B;
+}
+function reportToText(B){
+  return B.map(b=>{
+    if(b.t==="h1") return "\n"+b.s;
+    if(b.t==="c") return b.s;
+    if(b.t==="h2") return "\n"+b.s;
+    if(b.t==="h3") return "\n"+b.s;
+    if(b.t==="li") return "- "+b.s;
+    return b.s;
+  }).join("\n");
+}
+function reportToHTML(B){
+  const e2=s=>String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  let body="";
+  B.forEach(b=>{
+    if(b.t==="h1") body+=`<p style="text-align:center;font-weight:bold;font-size:15pt;margin:2pt 0">${e2(b.s)}</p>`;
+    else if(b.t==="c") body+=`<p style="text-align:center;font-style:italic;margin:2pt 0 10pt">${e2(b.s)}</p>`;
+    else if(b.t==="h2") body+=`<p style="font-weight:bold;margin:10pt 0 3pt">${e2(b.s)}</p>`;
+    else if(b.t==="h3") body+=`<p style="font-weight:bold;font-style:italic;margin:7pt 0 2pt">${e2(b.s)}</p>`;
+    else if(b.t==="li") body+=`<p style="margin:2pt 0 2pt 20pt;text-indent:-14pt">- ${e2(b.s)}</p>`;
+    else body+=`<p style="margin:3pt 0;text-align:justify">${e2(b.s)}</p>`;
+  });
+  const head=`<table style="width:100%;border-collapse:collapse;border:none;margin-bottom:8pt"><tr>
+    <td style="border:none;text-align:center;font-size:12pt;vertical-align:top;width:50%">ĐOÀN TN UBND TỈNH QUẢNG NINH<br><b>BCH ĐOÀN CHI CỤC HẢI QUAN KV VIII</b><br>***<br>Số:      -BC/ĐTN</td>
+    <td style="border:none;text-align:center;font-size:12pt;vertical-align:top"><b>ĐOÀN TNCS HỒ CHÍ MINH</b><br><i>Quảng Ninh, ngày ... tháng ... năm ${curYear}</i></td></tr></table>`;
+  const foot=`<table style="width:100%;border-collapse:collapse;border:none;margin-top:14pt"><tr>
+    <td style="border:none;width:50%">&nbsp;</td>
+    <td style="border:none;text-align:center;font-size:12pt"><b>TM. BAN CHẤP HÀNH</b><br><b>BÍ THƯ</b></td></tr></table>`;
+  return `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"><style>@page{margin:2cm}body{font-family:'Times New Roman',serif;font-size:13pt;line-height:1.45}</style></head><body>${head}${body}${foot}</body></html>`;
+}
 function viewKetXuat(){
   const box=el("div");
-  box.appendChild(el("div","pagehead",`<div><h2>Kết xuất báo cáo</h2><p>Đoạn văn tự sinh theo kỳ đã chọn — bấm Sao chép rồi dán vào báo cáo Word.</p></div>`));
-  const pbWrap=el("div");pbWrap.style.marginBottom="16px";pbWrap.style.display="flex";pbWrap.style.gap="10px";pbWrap.style.flexWrap="wrap";
+  box.appendChild(el("div","pagehead",`<div><h2>Kết xuất báo cáo</h2><p>Tự sinh <b>báo cáo đầy đủ</b> theo kỳ (Đặc điểm tình hình → Kết quả theo lĩnh vực → Chỉ tiêu → Đánh giá → Nhiệm vụ) từ dữ liệu đã nhập. Bấm <b>Tải Word</b> hoặc <b>In/Lưu PDF</b>, sau đó bổ sung các phần trong ngoặc [ ].</p></div>`));
+  const pbWrap=el("div");pbWrap.style.marginBottom="16px";pbWrap.style.display="flex";pbWrap.style.gap="10px";pbWrap.style.flexWrap="wrap";pbWrap.style.alignItems="center";
   pbWrap.appendChild(periodBar(()=>render()));
-  const cp=el("button","btn btn-gold",IC.copy+"Sao chép đoạn văn");pbWrap.appendChild(cp);
+  const cp=el("button","btn btn-gold",(typeof IC!=="undefined"&&IC.copy?IC.copy:"")+"Sao chép");
+  const wd=el("button","btn btn-primary","⬇ Tải Word (.doc)");
+  const pr=el("button","btn btn-ghost","🖨 In / Lưu PDF");
+  const ai=el("button","btn btn-primary","✨ Soạn bằng AI (Gemini)");ai.style.background="linear-gradient(90deg,#7C3AED,#0A5CA8)";
+  const aip=el("button","btn btn-gold","📋 Câu lệnh AI (dán vào AI bất kỳ)");
+  pbWrap.appendChild(cp);pbWrap.appendChild(wd);pbWrap.appendChild(pr);pbWrap.appendChild(aip);pbWrap.appendChild(ai);
   box.appendChild(pbWrap);
-  const g=aggregate(curPeriod);
-  const T=currentTargets();
-  let lines=[`Kết quả thực hiện chỉ tiêu công tác Đoàn năm ${curYear} (số liệu cập nhật đến hết ${curPeriod.toLowerCase()} năm ${curYear}):`];
-  allCrit().forEach((ct,i)=>{
-    const tgt=T.map[ct.key], val=critActual(ct,g,(Store.user.role==="admin"?null:Store.user.don_vi),curYear),p=tgt?val/tgt*100:0;
-    if(ct.custom) lines.push(`(${i+1}) ${ct.name}: đạt ${fmt(val)}/${fmt(tgt)} ${ct.unit||""} (${pctVN(p)}%).`);
-    else lines.push(`(${i+1}) ${ct.tpl(fmt(val),fmt(tgt))} (đạt ${pctVN(p)}%).`);
-  });
-  const text=lines.join("\n");
+  // KHUNG VĂN MẪU (chỉ Quản trị): các đoạn văn định tính dùng lại mỗi kỳ, báo cáo tự chèn thay cho phần [ ]
+  if(Store.user.role==="admin"){
+    const tpl=reportTpl();
+    const fields=[["chu_de","Mục 1 — Việc thực hiện chủ đề công tác năm"],["dac_diem","Mục I — Đặc điểm, tình hình (nối sau câu số liệu)"],["uu_diem","Mục III.1 — Ưu điểm"],["ton_tai","Mục III.2 — Tồn tại, hạn chế"],["nguyen_nhan","Mục III.3 — Nguyên nhân"],["phuong_huong","Mục IV — Nhiệm vụ trọng tâm thời gian tới"]];
+    const d=el("details");d.style.cssText="margin:0 0 16px;border:1px solid var(--line);border-radius:12px;background:var(--card);box-shadow:var(--shadow);overflow:hidden";
+    d.innerHTML=`<summary style="cursor:pointer;padding:12px 16px;font-weight:700;color:var(--red)">🧩 Khung văn mẫu (dùng lại mỗi kỳ) — điền các đoạn văn định tính để báo cáo tự chèn</summary>`;
+    const bodyd=el("div");bodyd.style.cssText="padding:0 16px 14px";
+    bodyd.appendChild(el("div","hint","Các đoạn dưới đây sẽ tự thay cho phần [ ] trong báo cáo và đưa vào câu lệnh AI; số liệu vẫn tự cập nhật theo kỳ. Để trống ô nào thì báo cáo giữ phần gợi ý [ ] của ô đó."));
+    const ta={};
+    fields.forEach(pair=>{
+      const k=pair[0], lab=pair[1];
+      const w=el("div");w.style.marginTop="8px";
+      const lb=el("label",null,lab);lb.style.cssText="display:block;font-size:12px;font-weight:600;color:var(--muted);margin:6px 0 3px";w.appendChild(lb);
+      const t=el("textarea");t.value=tpl[k]||"";t.rows=(k==="chu_de"||k==="dac_diem"||k==="phuong_huong")?3:2;
+      t.style.cssText="width:100%;padding:9px 11px;border:1.5px solid var(--line);border-radius:9px;font-family:inherit;font-size:13.5px;line-height:1.5";
+      ta[k]=t;w.appendChild(t);bodyd.appendChild(w);
+    });
+    const sv=el("button","btn btn-primary","💾 Lưu khung văn mẫu");sv.style.cssText="margin-top:12px;width:auto";
+    sv.onclick=async()=>{const obj={};fields.forEach(p=>obj[p[0]]=ta[p[0]].value.trim());try{sv.disabled=true;sv.textContent="Đang lưu…";await Store.saveSetting("report_tpl",JSON.stringify(obj));toast("Đã lưu khung văn mẫu.","ok");await reload();render();}catch(e){toast("Lưu thất bại: "+e.message,"bad");sv.disabled=false;sv.textContent="💾 Lưu khung văn mẫu";}};
+    bodyd.appendChild(sv);
+    d.appendChild(bodyd);box.appendChild(d);
+  }
+  const B=buildReportBlocks();
+  const text=reportToText(B);
   const rep=el("div","report");
-  rep.innerHTML=`<div class="lead">${esc(lines[0])}</div>`+lines.slice(1).map(l=>esc(l)).join("\n");
+  rep.innerHTML=B.map(b=>{
+    if(b.t==="h1") return `<div style="text-align:center;font-weight:800;font-size:16px;margin:2px 0">${esc(b.s)}</div>`;
+    if(b.t==="c") return `<div style="text-align:center;font-style:italic;margin:0 0 10px">${esc(b.s)}</div>`;
+    if(b.t==="h2") return `<div style="font-weight:800;margin:12px 0 4px">${esc(b.s)}</div>`;
+    if(b.t==="h3") return `<div style="font-weight:700;font-style:italic;margin:8px 0 3px">${esc(b.s)}</div>`;
+    if(b.t==="li") return `<div style="margin:2px 0 2px 18px;text-indent:-12px">- ${esc(b.s)}</div>`;
+    return `<div style="margin:4px 0;text-align:justify">${esc(b.s)}</div>`;
+  }).join("");
   box.appendChild(rep);
-  cp.onclick=()=>{navigator.clipboard.writeText(text).then(()=>toast("Đã sao chép vào bộ nhớ tạm.","ok"),()=>toast("Trình duyệt chặn sao chép — hãy bôi đen thủ công.","bad"));};
+  cp.onclick=()=>{navigator.clipboard.writeText(text).then(()=>toast("Đã sao chép nội dung báo cáo.","ok"),()=>toast("Trình duyệt chặn sao chép — hãy bôi đen thủ công.","bad"));};
+  wd.onclick=()=>{
+    try{
+      const html=reportToHTML(B);
+      const blob=new Blob(["﻿"+html],{type:"application/msword;charset=utf-8"});
+      const a=el("a");a.href=URL.createObjectURL(blob);a.download=`Bao_cao_cong_tac_Doan_${curYear}_${new Date().toISOString().slice(0,10)}.doc`;document.body.appendChild(a);a.click();a.remove();
+      toast("Đã tải file Word báo cáo.","ok");
+    }catch(e){ toast("Không tạo được file Word: "+e.message,"bad"); }
+  };
+  pr.onclick=()=>{
+    try{
+      const w=window.open("","_blank");
+      if(!w){ toast("Trình duyệt chặn cửa sổ in — hãy cho phép pop-up rồi thử lại.","bad"); return; }
+      w.document.write(reportToHTML(B));
+      w.document.close(); w.focus();
+      setTimeout(()=>{ try{w.print();}catch(e){} },400);
+    }catch(e){ toast("Không mở được cửa sổ in: "+e.message,"bad"); }
+  };
+  ai.onclick=async()=>{
+    if(!Store.aiDraft){ toast("Tính năng AI cần bản Google Sheets + Code.gs mới (đã thêm hàm aiDraft).","bad"); return; }
+    const prompt=
+"Bạn là trợ lý soạn thảo văn bản của Đoàn TNCS Hồ Chí Minh Chi cục Hải quan khu vực VIII. "+
+"Hãy viết một BÁO CÁO kết quả công tác Đoàn và phong trào thanh niên HOÀN CHỈNH, trang trọng, đúng văn phong hành chính - đoàn thể Việt Nam, "+
+"dựa DUY NHẤT trên số liệu và dàn ý bên dưới (TUYỆT ĐỐI không bịa thêm số liệu; số nào chưa có thì diễn đạt định tính). "+
+"Giữ đúng cấu trúc: I. Đặc điểm, tình hình; II. Kết quả đạt được (viết đầy đủ từng mục theo dàn ý, mỗi mục thành đoạn văn mạch lạc, nêu bật vai trò xung kích, tình nguyện, chuyển đổi số của tuổi trẻ Hải quan); mục Kết quả thực hiện chỉ tiêu (giữ nguyên số liệu); III. Đánh giá chung (Ưu điểm; Tồn tại, hạn chế; Nguyên nhân); IV. Nhiệm vụ trọng tâm thời gian tới. "+
+"Viết thay cho các chỗ để trống trong ngoặc [ ]. Không dùng dấu gạch ngang dài hay mũi tên. Trả về văn bản thuần, không dùng markdown.\n\n=== SỐ LIỆU VÀ DÀN Ý ===\n"+text;
+    const old=ai.textContent; ai.disabled=true; ai.textContent="⏳ AI đang soạn…";
+    try{
+      const out=await Store.aiDraft(prompt);
+      const root=$("#modalRoot");
+      root.innerHTML=`<div class="modal-bg"><div class="modal" style="max-width:760px">
+        <div class="modal-head"><span>✨ Báo cáo do AI (Gemini) soạn</span><button class="x" id="ai_close">×</button></div>
+        <div style="padding:16px 20px">
+          <div class="hint" style="margin:0 0 8px">AI viết dựa trên số liệu đã nhập. <b>Vui lòng rà soát, chỉnh sửa và chịu trách nhiệm nội dung trước khi ban hành.</b></div>
+          <textarea id="ai_out" style="width:100%;height:52vh;padding:12px;border:1.5px solid var(--line);border-radius:10px;font-family:inherit;font-size:14px;line-height:1.6;resize:vertical"></textarea>
+        </div>
+        <div class="modal-foot"><button class="btn btn-ghost" id="ai_copy">Sao chép</button><button class="btn btn-primary" id="ai_word">⬇ Tải Word (.doc)</button><button class="btn btn-ghost" id="ai_cancel">Đóng</button></div>
+      </div></div>`;
+      $("#ai_out").value=out;
+      const close=()=>root.innerHTML=""; $("#ai_close").onclick=close; $("#ai_cancel").onclick=close;
+      $("#ai_copy").onclick=()=>{navigator.clipboard.writeText($("#ai_out").value).then(()=>toast("Đã sao chép.","ok"),()=>toast("Trình duyệt chặn sao chép.","bad"));};
+      $("#ai_word").onclick=()=>{
+        const e2=s=>String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+        const bodyH=$("#ai_out").value.split(/\n/).map(l=>l.trim()?`<p style="margin:4pt 0;text-align:justify">${e2(l)}</p>`:"<p>&nbsp;</p>").join("");
+        const html=`<html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta charset="utf-8"><style>@page{margin:2cm}body{font-family:'Times New Roman',serif;font-size:13pt;line-height:1.45}</style></head><body>${bodyH}</body></html>`;
+        const blob=new Blob(["﻿"+html],{type:"application/msword;charset=utf-8"});
+        const a=el("a");a.href=URL.createObjectURL(blob);a.download="Bao_cao_AI_"+curYear+"_"+new Date().toISOString().slice(0,10)+".doc";document.body.appendChild(a);a.click();a.remove();
+        toast("Đã tải file Word.","ok");
+      };
+    }catch(e){ toast("AI lỗi: "+e.message,"bad"); }
+    finally{ ai.disabled=false; ai.textContent=old; }
+  };
+  // CÁCH A — xuất câu lệnh (prompt) để dán vào trợ lý AI bất kỳ (không cần khóa API, không tự gửi dữ liệu ra ngoài)
+  aip.onclick=()=>{
+    const prompt=
+"Bạn là trợ lý soạn thảo văn bản của Đoàn TNCS Hồ Chí Minh Chi cục Hải quan khu vực VIII (trực thuộc Đoàn TNCS Hồ Chí Minh Ủy ban nhân dân tỉnh, có 08 chi đoàn trực thuộc). "+
+"Hãy viết một BÁO CÁO kết quả công tác Đoàn và phong trào thanh niên HOÀN CHỈNH, trang trọng, đúng văn phong hành chính - đoàn thể Việt Nam, "+
+"dựa DUY NHẤT trên số liệu và dàn ý bên dưới (TUYỆT ĐỐI không bịa thêm số liệu; số nào chưa có thì diễn đạt định tính). "+
+"Giữ đúng cấu trúc: I. Đặc điểm, tình hình; II. Kết quả đạt được (viết đầy đủ từng mục theo dàn ý, mỗi mục thành đoạn văn mạch lạc, nêu bật vai trò xung kích, tình nguyện, chuyển đổi số của tuổi trẻ Hải quan); mục Kết quả thực hiện chỉ tiêu (giữ nguyên số liệu); III. Đánh giá chung (Ưu điểm; Tồn tại, hạn chế; Nguyên nhân); IV. Nhiệm vụ trọng tâm thời gian tới. "+
+"Viết thay cho các chỗ để trống trong ngoặc [ ]. Không dùng dấu gạch ngang dài hay mũi tên. Trả về văn bản thuần, không dùng markdown.\n\n=== SỐ LIỆU VÀ DÀN Ý ===\n"+text;
+    const root=$("#modalRoot");
+    root.innerHTML=`<div class="modal-bg"><div class="modal" style="max-width:760px">
+      <div class="modal-head"><span>📋 Câu lệnh cho trợ lý AI</span><button class="x" id="aip_close">×</button></div>
+      <div style="padding:16px 20px">
+        <div class="hint" style="margin:0 0 8px">Bấm <b>Sao chép câu lệnh</b> rồi dán vào một trợ lý AI bất kỳ (Gemini, Claude, ChatGPT...) để nhờ viết báo cáo, sau đó dán kết quả trở lại và rà soát. <b>Dữ liệu chỉ rời khỏi máy khi chính anh dán vào</b> — an toàn, không cần khóa API.</div>
+        <textarea id="aip_out" readonly style="width:100%;height:50vh;padding:12px;border:1.5px solid var(--line);border-radius:10px;font-family:inherit;font-size:13.5px;line-height:1.55"></textarea>
+      </div>
+      <div class="modal-foot"><button class="btn btn-primary" id="aip_copy">📋 Sao chép câu lệnh</button><button class="btn btn-ghost" id="aip_cancel">Đóng</button></div>
+    </div></div>`;
+    $("#aip_out").value=prompt;
+    const close=()=>root.innerHTML=""; $("#aip_close").onclick=close; $("#aip_cancel").onclick=close;
+    $("#aip_copy").onclick=()=>{const t=$("#aip_out");try{t.focus();t.select();}catch(e){} navigator.clipboard.writeText(t.value).then(()=>toast("Đã sao chép câu lệnh — dán vào trợ lý AI.","ok"),()=>{try{document.execCommand("copy");toast("Đã sao chép.","ok");}catch(e){toast("Hãy bôi đen ô và bấm Ctrl+C.","bad");}});};
+  };
   return box;
 }
 
@@ -1929,10 +2164,10 @@ function viewHoSo(){
   const hoActs=el("div");hoActs.style.cssText="display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:flex-end;flex:0 0 auto";
   head.appendChild(hoActs);box.appendChild(head);
 
-  if(!hosoUnit) hosoUnit = isAdmin ? ADMIN_UNIT : u.don_vi;
-  if(!isAdmin) hosoUnit = u.don_vi;
+  if(!hosoUnit) hosoUnit = seeAll() ? ADMIN_UNIT : u.don_vi;
+  if(!seeAll()) hosoUnit = u.don_vi;
 
-  if(isAdmin){
+  if(seeAll()){
     const bar=el("div","periodbar");bar.style.marginBottom="16px";
     bar.innerHTML=`<label>Chọn đơn vị</label>`;
     const s=el("select");DON_VI.forEach(d=>s.appendChild(new Option(d,d)));s.value=hosoUnit;
@@ -1940,7 +2175,7 @@ function viewHoSo(){
   }
 
   const isAdminUnit = hosoUnit===ADMIN_UNIT;
-  const canEdit = isAdmin || hosoUnit===u.don_vi;
+  const canEdit = !isViewer() && (isAdmin || hosoUnit===u.don_vi);
   const p=getProfile(hosoUnit);
   const card=el("div","profcard");
   card.appendChild(el("h3",null, isAdminUnit?"Đoàn Chi cục Hải quan khu vực VIII":esc(hosoUnit)));
@@ -2292,15 +2527,15 @@ function viewDoanVien(){
   const u=Store.user, isAdmin=u.role==="admin";
   const box=el("div");
   const head=el("div","pagehead");
-  head.innerHTML=`<div><h2>Danh sách đoàn viên</h2><p>${isAdmin?"Quản lý, theo dõi đoàn viên của toàn Đoàn Chi cục — thêm, sửa, xóa và tra cứu.":"Danh sách đoàn viên của <b>"+esc(u.don_vi)+"</b>."}</p></div>`;
+  head.innerHTML=`<div><h2>Danh sách đoàn viên</h2><p>${isViewer()?"Xem danh sách đoàn viên của toàn Đoàn Chi cục (chỉ xem).":(isAdmin?"Quản lý, theo dõi đoàn viên của toàn Đoàn Chi cục — thêm, sửa, xóa và tra cứu.":"Danh sách đoàn viên của <b>"+esc(u.don_vi)+"</b>.")}</p></div>`;
   const addBtn=el("button","btn btn-primary",IC.add+"Thêm đoàn viên");
   addBtn.onclick=()=>openListForm({title:"đoàn viên",fields:MEMBER_FIELDS,rec:{},isAdmin,lockUnit:isAdmin?DON_VI[1]:u.don_vi,saver:r=>Store.saveMember(r)});
   const impBtn=el("button","btn btn-ghost btn-sm",IC.up+"Nhập từ Excel/CSV");impBtn.onclick=()=>openImport("DoanVien");
-  const acts=el("div");acts.style.cssText="display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:flex-end;flex:0 0 auto";acts.appendChild(addBtn);
+  const acts=el("div");acts.style.cssText="display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:flex-end;flex:0 0 auto";if(!isViewer())acts.appendChild(addBtn);
   head.appendChild(acts);box.appendChild(head);
 
   const sel=new Set();
-  const base=()=> MEMBERS.filter(m=> isAdmin ? (dvUnit==="__all"||m.don_vi===dvUnit) : m.don_vi===u.don_vi);
+  const base=()=> MEMBERS.filter(m=> seeAll() ? (dvUnit==="__all"||m.don_vi===dvUnit) : m.don_vi===u.don_vi);
   const stats=el("div");stats.style.cssText="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px";
   // thanh xóa hàng loạt
   const bulk=el("div");bulk.style.cssText="display:none;align-items:center;gap:12px;background:#FDECEA;border:1px solid #F5C6C0;border-radius:10px;padding:10px 14px;margin-bottom:14px";
@@ -2320,14 +2555,14 @@ function viewDoanVien(){
 
   const card=el("div","card");
   const tb=el("div","toolbar");tb.innerHTML=`<b style="font-size:13px">Bộ lọc:</b>`;
-  if(isAdmin){
+  if(seeAll()){
     const su=el("select");su.appendChild(new Option("Tất cả đơn vị","__all"));DON_VI.forEach(d=>su.appendChild(new Option(d,d)));su.value=dvUnit;
     su.onchange=()=>{dvUnit=su.value;dvPage=1;render();};tb.appendChild(su);
   }
   const sInput=el("input");sInput.placeholder="Tìm tên, mã CC, phòng/đội, chức danh…";sInput.value=dvSearch;
   sInput.style.cssText="flex:1;min-width:180px;padding:8px 11px;border:1.5px solid var(--line);border-radius:9px";
   tb.appendChild(sInput);
-  tb.appendChild(impBtn);
+  if(!isViewer()) tb.appendChild(impBtn);
   const exp=el("button","btn btn-ghost btn-sm",IC.down+"Xuất Excel");tb.appendChild(exp);
   card.appendChild(tb);
   const scroll=el("div","tablescroll");card.appendChild(scroll);
@@ -2350,7 +2585,7 @@ function viewDoanVien(){
     t.innerHTML=`<thead><tr><th class="selcol"><input type="checkbox" class="selall" title="Chọn tất cả trong trang"></th><th class="num">TT</th><th>Họ và tên</th><th>Ngày sinh</th><th>Giới tính</th><th>Phòng/đội</th><th>Chức danh đoàn thể</th><th>Đảng viên</th><th>Xếp loại cuối năm</th>${isAdmin?"<th>Đơn vị</th>":""}<th></th></tr></thead>`;
     const tbody=el("tbody");
     pageData.forEach((m,i)=>{
-      const canEdit=isAdmin||m.don_vi===u.don_vi;
+      const canEdit=!isViewer()&&(isAdmin||m.don_vi===u.don_vi);
       const tr=el("tr");
       tr.innerHTML=`<td class="selcol">${canEdit?`<input type="checkbox" class="selrow" data-id="${esc(m.id)}">`:""}</td><td class="num">${(dvPage-1)*dvSize+i+1}</td>
         <td><b>${esc(m.ho_ten)}</b>${m.ma_cc?`<div style="color:var(--muted);font-size:12px">${esc(m.ma_cc)}</div>`:""}</td>
@@ -2399,15 +2634,15 @@ function viewDoDau(){
   const u=Store.user, isAdmin=u.role==="admin";
   const box=el("div");
   const head=el("div","pagehead");
-  head.innerHTML=`<div><h2>Danh sách đỡ đầu thiếu nhi</h2><p>${isAdmin?"Theo dõi các cháu thiếu nhi được các chi đoàn nhận đỡ đầu — thêm, sửa, xóa và tra cứu.":"Danh sách các cháu do <b>"+esc(u.don_vi)+"</b> nhận đỡ đầu."}</p></div>`;
+  head.innerHTML=`<div><h2>Danh sách đỡ đầu thiếu nhi</h2><p>${isViewer()?"Xem danh sách các cháu được các chi đoàn nhận đỡ đầu (chỉ xem).":(isAdmin?"Theo dõi các cháu thiếu nhi được các chi đoàn nhận đỡ đầu — thêm, sửa, xóa và tra cứu.":"Danh sách các cháu do <b>"+esc(u.don_vi)+"</b> nhận đỡ đầu.")}</p></div>`;
   const addBtn=el("button","btn btn-primary",IC.add+"Thêm cháu đỡ đầu");
   addBtn.onclick=()=>openListForm({title:"cháu đỡ đầu",fields:DODAU_FIELDS,rec:{},isAdmin,lockUnit:isAdmin?DON_VI[1]:u.don_vi,saver:r=>Store.saveDodau(r)});
   const impBtn=el("button","btn btn-ghost btn-sm",IC.up+"Nhập từ Excel/CSV");impBtn.onclick=()=>openImport("DoDau");
-  const acts=el("div");acts.style.cssText="display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:flex-end;flex:0 0 auto";acts.appendChild(addBtn);
+  const acts=el("div");acts.style.cssText="display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:flex-end;flex:0 0 auto";if(!isViewer())acts.appendChild(addBtn);
   head.appendChild(acts);box.appendChild(head);
 
   const sel=new Set();
-  const base=()=> DODAU.filter(m=> isAdmin ? (ddUnit==="__all"||m.don_vi===ddUnit) : m.don_vi===u.don_vi);
+  const base=()=> DODAU.filter(m=> seeAll() ? (ddUnit==="__all"||m.don_vi===ddUnit) : m.don_vi===u.don_vi);
   const stats=el("div");stats.style.cssText="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px";
   const bulk=el("div");bulk.style.cssText="display:none;align-items:center;gap:12px;background:#FDECEA;border:1px solid #F5C6C0;border-radius:10px;padding:10px 14px;margin-bottom:14px";
   const bulkCount=el("b");bulkCount.style.color="#8A2A1F";
@@ -2425,14 +2660,14 @@ function viewDoDau(){
   };
   const card=el("div","card");
   const tb=el("div","toolbar");tb.innerHTML=`<b style="font-size:13px">Bộ lọc:</b>`;
-  if(isAdmin){
+  if(seeAll()){
     const su=el("select");su.appendChild(new Option("Tất cả đơn vị","__all"));DON_VI.forEach(d=>su.appendChild(new Option(d,d)));su.value=ddUnit;
     su.onchange=()=>{ddUnit=su.value;ddPage=1;render();};tb.appendChild(su);
   }
   const sInput=el("input");sInput.placeholder="Tìm tên cháu, trường lớp, địa chỉ…";sInput.value=ddSearch;
   sInput.style.cssText="flex:1;min-width:180px;padding:8px 11px;border:1.5px solid var(--line);border-radius:9px";
   tb.appendChild(sInput);
-  tb.appendChild(impBtn);
+  if(!isViewer()) tb.appendChild(impBtn);
   const exp=el("button","btn btn-ghost btn-sm",IC.down+"Xuất Excel");tb.appendChild(exp);
   card.appendChild(tb);
   const scroll=el("div","tablescroll");card.appendChild(scroll);
@@ -2453,7 +2688,7 @@ function viewDoDau(){
     t.innerHTML=`<thead><tr><th class="selcol"><input type="checkbox" class="selall" title="Chọn tất cả trong trang"></th><th class="num">TT</th><th>Họ tên trẻ</th><th class="num">Năm sinh</th><th>Trường/lớp</th><th>Địa chỉ</th><th>Hoàn cảnh</th><th class="num">Thời hạn</th><th class="num">Mức/tháng</th>${isAdmin?"<th>Đơn vị</th>":""}<th></th></tr></thead>`;
     const tbody=el("tbody");
     pageData.forEach((m,i)=>{
-      const canEdit=isAdmin||m.don_vi===u.don_vi;
+      const canEdit=!isViewer()&&(isAdmin||m.don_vi===u.don_vi);
       const tr=el("tr");
       tr.innerHTML=`<td class="selcol">${canEdit?`<input type="checkbox" class="selrow" data-id="${esc(m.id)}">`:""}</td><td class="num">${(ddPage-1)*ddSize+i+1}</td><td><b>${esc(m.ho_ten)}</b></td>
         <td class="num">${esc(m.nam_sinh)}</td><td>${esc(m.truong_lop)}</td>
@@ -2740,41 +2975,115 @@ function viewThongKe(){
   const ys=el("select");NAM_LIST.forEach(y=>{const o=new Option("Năm "+y,y);if(y===curYear)o.selected=true;ys.appendChild(o);});
   ys.onchange=()=>{curYear=parseInt(ys.value);switchScope(curYear,render);};bar.appendChild(ys);box.appendChild(bar);
 
-  const units = isAdmin ? DON_VI.slice(1) : [u.don_vi];
+  const units = DON_VI.slice(1);   // mọi tài khoản xem được so sánh hoạt động toàn Đoàn (để nhìn nhau phấn đấu)
   const row=dv=>{
+    const own = seeAll() || dv===u.don_vi;   // dữ liệu nhân sự/đỡ đầu: Quản trị & Khách xem tất cả; chi đoàn chỉ đơn vị mình
     const mem=MEMBERS.filter(m=>m.don_vi===dv);
     const dd=DODAU.filter(m=>m.don_vi===dv);
     return {
-      dv, soDV:mem.length,
-      dang:mem.filter(m=>String(m.dang_vien).toLowerCase()==="x").length,
-      nu:mem.filter(m=>String(m.gioi_tinh||"").trim().toLowerCase().startsWith("nữ")).length,
-      soHD:ACT.filter(a=>a.don_vi===dv&&num(a.nam||2026)===curYear).length,
-      soTre:dd.length, muc:dd.reduce((s,m)=>s+num(m.muc_thang),0)
+      dv, own,
+      soDV: own? mem.length : null,
+      dang: own? mem.filter(m=>String(m.dang_vien).toLowerCase()==="x").length : null,
+      nu:   own? mem.filter(m=>String(m.gioi_tinh||"").trim().toLowerCase().startsWith("nữ")).length : null,
+      soHD: aggUnit(dv,"Cả năm").count,  // số hoạt động là dữ liệu chung, hiển thị cho mọi đơn vị
+      soTre: own? dd.length : null, muc: own? dd.reduce((s,m)=>s+num(m.muc_thang),0) : null
     };
   };
   const rows=units.map(row);
-  const tot=rows.reduce((t,r)=>({soDV:t.soDV+r.soDV,dang:t.dang+r.dang,nu:t.nu+r.nu,soHD:t.soHD+r.soHD,soTre:t.soTre+r.soTre,muc:t.muc+r.muc}),{soDV:0,dang:0,nu:0,soHD:0,soTre:0,muc:0});
+  const tot=rows.reduce((t,r)=>({soDV:t.soDV+num(r.soDV),dang:t.dang+num(r.dang),nu:t.nu+num(r.nu),soHD:t.soHD+num(r.soHD),soTre:t.soTre+num(r.soTre),muc:t.muc+num(r.muc)}),{soDV:0,dang:0,nu:0,soHD:0,soTre:0,muc:0});
 
   const stats=el("div");stats.style.cssText="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px";
-  stats.innerHTML=statChip("Tổng đoàn viên",fmt(tot.soDV),"var(--red)")+statChip("Đảng viên",fmt(tot.dang),"#B8860B")+statChip("Trẻ đỡ đầu",fmt(tot.soTre),"#0A7E4A")+statChip("Hoạt động năm "+curYear,fmt(tot.soHD),"#6B7280");
+  const nsL=seeAll()?"":" (đơn vị bạn)";
+  stats.innerHTML=statChip("Đoàn viên"+nsL,fmt(tot.soDV),"var(--red)")+statChip("Đảng viên"+nsL,fmt(tot.dang),"#B8860B")+statChip("Trẻ đỡ đầu"+nsL,fmt(tot.soTre),"#0A7E4A")+statChip("Hoạt động năm "+curYear+" (toàn Đoàn)",fmt(tot.soHD),"#6B7280");
   box.appendChild(stats);
 
   const card=el("div","card");const scroll=el("div","tablescroll");
   const t=el("table");
   t.innerHTML=`<thead><tr><th>Đơn vị</th><th class="num">Đoàn viên</th><th class="num">Đảng viên</th><th class="num">Nữ</th><th class="num">Hoạt động ${curYear}</th><th class="num">Trẻ đỡ đầu</th><th class="num">Mức đỡ đầu/tháng</th></tr></thead>`;
   const tbody=el("tbody");
+  const cellN=v=>v==null?'<td class="num" style="color:var(--muted)">–</td>':`<td class="num">${fmt(v)}</td>`;
   rows.forEach(r=>{
     const tr=el("tr");
-    tr.innerHTML=`<td><b>${esc(r.dv)}</b></td><td class="num">${fmt(r.soDV)}</td><td class="num">${fmt(r.dang)}</td><td class="num">${fmt(r.nu)}</td><td class="num">${fmt(r.soHD)}</td><td class="num">${fmt(r.soTre)}</td><td class="num">${r.muc?fmt(r.muc):"–"}</td>`;
+    if(r.dv===u.don_vi) tr.style.background="rgba(212,45,42,.06)";
+    tr.innerHTML=`<td><b>${esc(r.dv)}</b>${r.dv===u.don_vi?' <span style="font-size:10px;font-weight:800;color:var(--red)">(đơn vị bạn)</span>':''}</td>${cellN(r.soDV)}${cellN(r.dang)}${cellN(r.nu)}<td class="num">${fmt(r.soHD)}</td>${cellN(r.soTre)}${cellN(r.muc)}`;
     tbody.appendChild(tr);
   });
-  if(isAdmin){
+  if(seeAll()){
     const tr=el("tr");tr.style.cssText="font-weight:800;background:#F3F7FB";
     tr.innerHTML=`<td>TỔNG CỘNG</td><td class="num">${fmt(tot.soDV)}</td><td class="num">${fmt(tot.dang)}</td><td class="num">${fmt(tot.nu)}</td><td class="num">${fmt(tot.soHD)}</td><td class="num">${fmt(tot.soTre)}</td><td class="num">${fmt(tot.muc)}</td>`;
     tbody.appendChild(tr);
   }
   t.appendChild(tbody);scroll.appendChild(t);card.appendChild(scroll);box.appendChild(card);
-  box.appendChild(el("div","banner",'<b>ℹ</b><div>Số liệu đoàn viên và đỡ đầu lấy từ hai danh sách tương ứng; số hoạt động lấy theo năm đã chọn. Cập nhật danh sách sẽ tự động phản ánh vào bảng này.</div>'));
+
+  /* ===== XẾP HẠNG THI ĐUA (mọi tài khoản xem được — để các chi đoàn nhìn nhau phấn đấu) ===== */
+  {
+    const crits=allCrit();
+    const rank=DON_VI.slice(1).map(dv=>{
+      const gu=aggUnit(dv,"Cả năm"), tg=unitTargets(dv,curYear).map;
+      const rs=[];
+      crits.forEach(c=>{ const t=num(tg[c.key]); if(t>0){ const v=critActual(c,gu,dv,curYear); rs.push(Math.min(v/t,1)); } });
+      const score=rs.length? Math.round(rs.reduce((s,x)=>s+x,0)/rs.length*1000)/10 : 0;
+      const done=rs.length>0 && rs.every(x=>x>=1);
+      return {dv,score,done,soHD:gu.count,nCrit:rs.length};
+    }).sort((a,b)=>b.score-a.score||b.soHD-a.soHD);
+    const rc=el("div","card");rc.style.marginTop="16px";
+    let rh=`<div style="padding:12px 14px 4px"><b style="font-size:15px">🏆 Xếp hạng thi đua chi đoàn — năm ${curYear}</b><div class="hint" style="margin:2px 0 6px">Điểm = mức hoàn thành bình quân các chỉ tiêu đã được phân bổ (đến hết năm). Chi đoàn chưa được phân bổ chỉ tiêu sẽ chưa có điểm.</div></div>`;
+    const rscroll=el("div","tablescroll");
+    let rows2=`<table><thead><tr><th>Hạng</th><th>Chi đoàn</th><th class="num">Số hoạt động</th><th class="num">Điểm hoàn thành</th><th>Ghi nhận</th></tr></thead><tbody>`;
+    rank.forEach((r,i)=>{
+      const medal=i===0?"🥇":i===1?"🥈":i===2?"🥉":(i+1);
+      const mine=r.dv===u.don_vi;
+      const bar=`<div style="display:flex;align-items:center;gap:8px"><div style="flex:1;height:8px;background:#EEF1F5;border-radius:5px;overflow:hidden;min-width:70px"><div style="height:100%;width:${Math.min(100,r.score)}%;background:${tierColor(r.score/100)}"></div></div><b style="min-width:46px;text-align:right">${r.nCrit?pctVN(r.score)+"%":"–"}</b></div>`;
+      rows2+=`<tr${mine?' style="background:rgba(212,45,42,.06)"':''}><td style="text-align:center;font-size:16px">${medal}</td><td><b>${esc(r.dv)}</b>${mine?' <span style="font-size:10px;font-weight:800;color:var(--red)">(đơn vị bạn)</span>':''}</td><td class="num">${fmt(r.soHD)}</td><td>${bar}</td><td>${r.done?'<span style="background:#E7F6EE;color:#0A7E4A;font-weight:700;padding:2px 8px;border-radius:20px;font-size:12px">✔ Đạt đủ chỉ tiêu</span>':(r.nCrit?"":'<span style="color:var(--muted);font-size:12px">chưa phân bổ chỉ tiêu</span>')}</td></tr>`;
+    });
+    rows2+="</tbody></table>";
+    rscroll.innerHTML=rows2;
+    rc.innerHTML=rh;
+    rc.appendChild(rscroll);
+    box.appendChild(rc);
+  }
+
+  /* ===== BIỂU ĐỒ TRỰC QUAN (Chart.js) ===== */
+  const chartCard=el("div","card");chartCard.style.marginTop="16px";
+  chartCard.innerHTML=`<div style="padding:12px 14px 0"><b style="font-size:15px">📊 Biểu đồ trực quan — năm ${curYear}</b></div>
+    <div id="chartNote" class="hint" style="padding:0 14px 8px"></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;padding:8px 14px 16px">
+      <div style="min-height:260px"><div style="font-weight:600;font-size:13px;margin-bottom:6px">Số hoạt động theo chi đoàn</div><canvas id="cvHD" height="220"></canvas></div>
+      <div style="min-height:260px"><div style="font-weight:600;font-size:13px;margin-bottom:6px">Lượt tham gia theo tháng</div><canvas id="cvLuot" height="220"></canvas></div>
+      <div style="min-height:260px"><div style="font-weight:600;font-size:13px;margin-bottom:6px">Cơ cấu hoạt động theo lĩnh vực</div><canvas id="cvLV" height="220"></canvas></div>
+    </div>`;
+  box.appendChild(chartCard);
+  setTimeout(function(){
+    const note=document.getElementById("chartNote");
+    if(typeof Chart==="undefined"){ if(note){note.innerHTML='⚠ Chưa tải được thư viện biểu đồ (cần Internet lần đầu). Số liệu bảng phía trên vẫn đầy đủ.';} return; }
+    const PALETTE=["#0A5CA8","#DC2626","#059669","#D97706","#7C3AED","#0891B2","#DB2777","#65A30D","#9333EA"];
+    const mkChart=(id,cfg)=>{const cv=document.getElementById(id); if(!cv) return; const old=Chart.getChart(cv); if(old) old.destroy(); return new Chart(cv,cfg);};
+    try{
+      // Số hoạt động theo chi đoàn (toàn Đoàn — mọi tài khoản xem được, đã loại trùng theo phạm vi từng đơn vị)
+      {
+        const labels=DON_VI.slice(1).map(dv=>dv.replace("Chi đoàn Hải quan cửa khẩu ","CK ").replace("Chi đoàn ",""));
+        const data=DON_VI.slice(1).map(dv=>aggUnit(dv,"Cả năm").count);
+        mkChart("cvHD",{type:"bar",data:{labels,datasets:[{label:"Số hoạt động",data,backgroundColor:"#0A5CA8",borderRadius:6}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{precision:0}}}}});
+      }
+      // Lượt tham gia theo 12 tháng — toàn Đoàn (dedup theo tháng)
+      const months=[]; const luotM=[];
+      for(let m=1;m<=12;m++){
+        months.push("T"+m);
+        const rm=ACT.filter(a=>num(a.nam||2026)===curYear&&num(a.thang)===m);
+        luotM.push(aggFrom(rm).luot_all);
+      }
+      mkChart("cvLuot",{type:"line",data:{labels:months,datasets:[{label:"Lượt tham gia",data:luotM,borderColor:"#DC2626",backgroundColor:"rgba(220,38,38,.12)",fill:true,tension:.3,pointRadius:3}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{precision:0}}}}});
+      // Cơ cấu hoạt động theo lĩnh vực — toàn Đoàn
+      const lvCount=LINH_VUC.map(lv=>ACT.filter(a=>num(a.nam||2026)===curYear&&a.linh_vuc===lv&&actRole(a)!=="cu_tham_gia").length);
+      const lvLabels=[],lvData=[],lvColors=[];
+      LINH_VUC.forEach((lv,i)=>{ if(lvCount[i]>0){ lvLabels.push(lv.length>34?lv.slice(0,32)+"…":lv); lvData.push(lvCount[i]); lvColors.push(PALETTE[i%PALETTE.length]); } });
+      if(lvData.length){
+        mkChart("cvLV",{type:"doughnut",data:{labels:lvLabels,datasets:[{data:lvData,backgroundColor:lvColors}]},options:{responsive:true,plugins:{legend:{position:"bottom",labels:{boxWidth:12,font:{size:10}}}}}});
+      } else if(note){ note.innerHTML="Chưa có hoạt động trong năm để vẽ biểu đồ cơ cấu."; }
+    }catch(e){ if(note){note.innerHTML="Lỗi khi vẽ biểu đồ: "+e.message;} }
+  },60);
+
+  box.appendChild(el("div","banner",'<b>ℹ</b><div>Số hoạt động lấy theo năm đã chọn (đã loại trùng chương trình phối hợp). '+(seeAll()?'Số liệu đoàn viên và đỡ đầu lấy từ hai danh sách tương ứng.':'Anh/chị xem được <b>so sánh hoạt động và xếp hạng toàn Đoàn</b> để cùng phấn đấu; riêng <b>danh sách nhân sự, đỡ đầu của đơn vị khác được bảo mật</b> nên hiển thị dấu “–”.')+'</div>'));
   return box;
 }
 
