@@ -2076,17 +2076,23 @@ function viewKetXuat(){
 "Viết thay cho các chỗ để trống trong ngoặc [ ]. Không dùng dấu gạch ngang dài hay mũi tên. Trả về văn bản thuần, không dùng markdown.\n\n=== SỐ LIỆU VÀ DÀN Ý ===\n"+text;
     const old=ai.textContent; ai.disabled=true; ai.textContent="⏳ AI đang soạn…";
     try{
-      // Tự thử lần lượt các mô hình (Google đôi khi đổi tên/ngừng mô hình cũ)
-      const _models=["gemini-flash-latest","gemini-3.6-flash","gemini-2.5-flash","gemini-2.0-flash"];
+      // Thử lần lượt các mô hình; tự CHỜ và THỬ LẠI khi máy chủ AI quá tải (429/503)
+      const _models=["gemini-flash-latest","gemini-2.5-flash","gemini-3.6-flash","gemini-2.0-flash"];
+      const _sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
       let _resp=null,_lastErr="";
+      outer:
       for(const _m of _models){
-        _resp=await fetch("https://generativelanguage.googleapis.com/v1beta/models/"+_m+":generateContent?key="+encodeURIComponent(gkey),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.4,maxOutputTokens:8192}})});
-        if(_resp.ok) break;
-        _lastErr=await _resp.text();
-        if(_resp.status===400||_resp.status===403){ try{localStorage.removeItem("hqkv8_gemini_key");}catch(e){} throw new Error("Gemini báo lỗi ("+_resp.status+"). "+String(_lastErr).slice(0,200)+" (Khóa API sai hoặc bị hạn chế — bấm lại nút để nhập khóa mới.)"); }
-        if(_resp.status!==404) break;   // lỗi khác 404 thì dừng và báo
+        for(let _try=0;_try<3;_try++){
+          _resp=await fetch("https://generativelanguage.googleapis.com/v1beta/models/"+_m+":generateContent?key="+encodeURIComponent(gkey),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.4,maxOutputTokens:8192}})});
+          if(_resp.ok) break outer;
+          _lastErr=await _resp.text();
+          if(_resp.status===400||_resp.status===403){ try{localStorage.removeItem("hqkv8_gemini_key");}catch(e){} throw new Error("Gemini báo lỗi ("+_resp.status+"). "+String(_lastErr).slice(0,200)+" (Khóa API sai hoặc bị hạn chế — bấm lại nút để nhập khóa mới.)"); }
+          if(_resp.status===429||_resp.status===503){ ai.textContent="⏳ Máy chủ AI bận, đang thử lại…"; await _sleep(1500*(_try+1)); continue; }
+          if(_resp.status===404){ break; }   // mô hình không tồn tại -> chuyển mô hình khác
+          break outer;                        // lỗi khác -> dừng
+        }
       }
-      if(!_resp||!_resp.ok){ throw new Error("Gemini báo lỗi. "+String(_lastErr).slice(0,240)); }
+      if(!_resp||!_resp.ok){ throw new Error("Máy chủ AI đang bận hoặc lỗi. "+String(_lastErr).slice(0,200)+" — vui lòng thử lại sau ít phút."); }
       const _dj=await _resp.json();
       let out=""; try{ out=_dj.candidates[0].content.parts.map(function(p){return p.text||"";}).join(""); }catch(e){ out=""; }
       if(!out) throw new Error("AI không trả về nội dung (có thể do bộ lọc an toàn hoặc dữ liệu quá dài). Hãy thử lại.");
